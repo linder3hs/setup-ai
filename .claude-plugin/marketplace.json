@@ -1,0 +1,14 @@
+{
+  "name": "setup-ai",
+  "owner": { "name": "Linder Hassinger" },
+  "metadata": {
+    "description": "Reusable AI coding harness for Claude Code — agents, skills, and commands shared across projects."
+  },
+  "plugins": [
+    {
+      "name": "setup-ai",
+      "source": "./core",
+      "description": "Planner, code-reviewer, security-reviewer, test-engineer and scaffolder agents + skills + /plan /review /test /scaffold commands."
+    }
+  ]
+}

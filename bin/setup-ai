@@ -1,0 +1,227 @@
+#!/usr/bin/env bash
+# setup-ai — reusable AI coding harness for Claude Code.
+# Symlinks agents/skills/commands from this repo into a project's .claude/ so updates
+# propagate with a single `git pull` here. See README.md.
+set -euo pipefail
+
+# ── Resolve where this harness lives (follow symlinks so it works from ~/.local/bin) ──
+SOURCE="${BASH_SOURCE[0]}"
+while [ -L "$SOURCE" ]; do
+  DIR="$(cd -P "$(dirname "$SOURCE")" >/dev/null 2>&1 && pwd)"
+  SOURCE="$(readlink "$SOURCE")"
+  [[ "$SOURCE" != /* ]] && SOURCE="$DIR/$SOURCE"
+done
+SETUP_AI_HOME="$(cd -P "$(dirname "$SOURCE")/.." >/dev/null 2>&1 && pwd)"
+CORE="$SETUP_AI_HOME/core"
+VERSION="$(cat "$SETUP_AI_HOME/VERSION" 2>/dev/null || echo "0.0.0")"
+MANIFEST_NAME=".setup-ai-manifest.json"
+
+# ── tiny output helpers ──
+c_grn() { printf '\033[32m%s\033[0m\n' "$*"; }
+c_yel() { printf '\033[33m%s\033[0m\n' "$*"; }
+c_red() { printf '\033[31m%s\033[0m\n' "$*" >&2; }
+die()   { c_red "error: $*"; exit 1; }
+
+have_jq() { command -v jq >/dev/null 2>&1; }
+
+usage() {
+  cat <<EOF
+setup-ai $VERSION — reusable AI coding harness for Claude Code
+
+Usage: setup-ai <command> [path] [flags]
+  install [path]     Symlink agents/skills/commands into <path>/.claude/ (default: cwd)
+                       --with-hooks   also merge guard/format hooks into settings.local.json
+                       --force        overwrite an existing CLAUDE.md
+  update  [path]     Re-sync: add new harness files, prune dead symlinks
+  list    [path]     Show what setup-ai installed in this project
+  uninstall [path]   Remove only what setup-ai installed (project files untouched)
+  doctor  [path]     Check for broken symlinks and version drift
+  version            Print version and harness location
+
+Harness home: $SETUP_AI_HOME
+EOF
+}
+
+# ── resolve target project dir + its .claude ──
+resolve_target() {
+  local p="${1:-$PWD}"
+  [ -d "$p" ] || die "not a directory: $p"
+  TARGET="$(cd "$p" && pwd)"
+  CLAUDE_DIR="$TARGET/.claude"
+  MANIFEST="$CLAUDE_DIR/$MANIFEST_NAME"
+}
+
+# ── detect stack from package.json → echoes nextjs|node|generic ──
+detect_stack() {
+  local pj="$TARGET/package.json"
+  if [ -f "$pj" ]; then
+    if grep -Eq '"next"[[:space:]]*:' "$pj"; then echo nextjs; return; fi
+    if grep -Eq '"(fastify|express|@nestjs/core|koa|hapi)"[[:space:]]*:' "$pj"; then echo node; return; fi
+  fi
+  echo generic
+}
+
+# ── symlink every file in a core subdir into .claude/<sub>/, recording paths ──
+# args: <subdir>  (agents|skills|commands). Appends installed rel-paths to $TRACK
+link_dir() {
+  local sub="$1" src="$CORE/$1" dest="$CLAUDE_DIR/$1"
+  [ -d "$src" ] || return 0
+  mkdir -p "$dest"
+  # walk files (skills are nested one level: <name>/SKILL.md)
+  while IFS= read -r -d '' f; do
+    local rel="${f#"$src"/}"            # e.g. plan-feature/SKILL.md
+    local link="$dest/$rel"
+    mkdir -p "$(dirname "$link")"
+    if [ -e "$link" ] && [ ! -L "$link" ]; then
+      c_yel "  skip (project file exists): $sub/$rel"
+      continue
+    fi
+    ln -sfn "$f" "$link"
+    echo ".claude/$sub/$rel" >>"$TRACK"
+    printf '  + %s\n' "$sub/$rel"
+  done < <(find "$src" -type f -print0)
+}
+
+cmd_install() {
+  local with_hooks=0 force=0 path=""
+  for a in "$@"; do
+    case "$a" in
+      --with-hooks) with_hooks=1 ;;
+      --force) force=1 ;;
+      -*) die "unknown flag: $a" ;;
+      *) path="$a" ;;
+    esac
+  done
+  resolve_target "$path"
+  mkdir -p "$CLAUDE_DIR"
+  TRACK="$(mktemp)"; : >"$TRACK"
+
+  c_grn "Installing setup-ai $VERSION → $CLAUDE_DIR"
+  link_dir agents
+  link_dir skills
+  link_dir commands
+
+  # CLAUDE.md from stack template (never clobber unless --force)
+  local stack tpl
+  stack="$(detect_stack)"
+  case "$stack" in
+    nextjs) tpl="$SETUP_AI_HOME/templates/CLAUDE.nextjs.md" ;;
+    node)   tpl="$SETUP_AI_HOME/templates/CLAUDE.node.md" ;;
+    *)      tpl="$SETUP_AI_HOME/templates/CLAUDE.generic.md" ;;
+  esac
+  if [ -f "$CLAUDE_DIR/CLAUDE.md" ] && [ "$force" -eq 0 ]; then
+    c_yel "  kept existing CLAUDE.md (use --force to replace; stack detected: $stack)"
+  else
+    cp "$tpl" "$CLAUDE_DIR/CLAUDE.md"
+    echo ".claude/CLAUDE.md" >>"$TRACK"
+    printf '  + CLAUDE.md (%s template)\n' "$stack"
+  fi
+
+  # optional hooks merge
+  if [ "$with_hooks" -eq 1 ]; then
+    merge_hooks
+  fi
+
+  write_manifest "$stack"
+  rm -f "$TRACK"
+  c_grn "Done. Open Claude Code in this project and run /help to see /plan /review /test /scaffold."
+}
+
+merge_hooks() {
+  local settings="$CLAUDE_DIR/settings.local.json" hooks="$SETUP_AI_HOME/hooks/hooks.json"
+  have_jq || { c_yel "  hooks skipped: jq not installed"; return 0; }
+  [ -f "$settings" ] || echo '{}' >"$settings"
+  cp "$settings" "$settings.bak"
+  jq --slurpfile h "$hooks" '.hooks = ($h[0].hooks)' "$settings.bak" >"$settings" \
+    && printf '  + hooks merged into settings.local.json (backup: settings.local.json.bak)\n' \
+    || { mv "$settings.bak" "$settings"; c_yel "  hooks merge failed; restored original"; }
+}
+
+write_manifest() {
+  local stack="$1"
+  if have_jq; then
+    jq -Rn --arg v "$VERSION" --arg s "$stack" \
+       '{version:$v, stack:$s, installed:[inputs]}' <"$TRACK" >"$MANIFEST"
+  else
+    # minimal manifest without jq
+    { echo "{\"version\":\"$VERSION\",\"stack\":\"$stack\",\"installed\":["
+      paste -sd, <(sed 's/.*/"&"/' "$TRACK"); echo "]}"; } >"$MANIFEST"
+  fi
+}
+
+cmd_list() {
+  resolve_target "${1:-}"
+  [ -f "$MANIFEST" ] || die "setup-ai not installed here (no $MANIFEST_NAME)"
+  if have_jq; then
+    c_grn "setup-ai $(jq -r .version "$MANIFEST") — stack: $(jq -r .stack "$MANIFEST")"
+    jq -r '.installed[] | "  " + .' "$MANIFEST"
+  else
+    cat "$MANIFEST"
+  fi
+}
+
+cmd_update() {
+  resolve_target "${1:-}"
+  [ -f "$MANIFEST" ] || die "setup-ai not installed here; run: setup-ai install"
+  c_grn "Updating setup-ai → $VERSION"
+  # prune dead symlinks first
+  cmd_doctor "$TARGET" --prune-quiet || true
+  # re-link (idempotent) without touching CLAUDE.md/hooks
+  local stack; stack="$(detect_stack)"
+  TRACK="$(mktemp)"; : >"$TRACK"
+  # preserve non-symlink entries (CLAUDE.md, hooks marker) from old manifest
+  if have_jq; then jq -r '.installed[] | select(test("/(agents|skills|commands)/")|not)' "$MANIFEST" >>"$TRACK"; fi
+  link_dir agents; link_dir skills; link_dir commands
+  write_manifest "$stack"
+  rm -f "$TRACK"
+  c_grn "Update complete."
+}
+
+cmd_uninstall() {
+  resolve_target "${1:-}"
+  [ -f "$MANIFEST" ] || die "setup-ai not installed here"
+  local n=0
+  while IFS= read -r rel; do
+    [ -z "$rel" ] && continue
+    local f="$TARGET/$rel"
+    if [ -L "$f" ] || [ -f "$f" ]; then rm -f "$f"; n=$((n+1)); fi
+  done < <(have_jq && jq -r '.installed[]' "$MANIFEST" || grep -oE '\.claude/[^"]+' "$MANIFEST")
+  # clean now-empty harness dirs
+  for d in agents skills commands; do
+    find "$CLAUDE_DIR/$d" -type d -empty -delete 2>/dev/null || true
+  done
+  rm -f "$MANIFEST"
+  c_grn "Removed $n setup-ai files. Your project's own .claude/ files are untouched."
+}
+
+cmd_doctor() {
+  local quiet=0; [ "${2:-}" = "--prune-quiet" ] && quiet=1
+  resolve_target "${1:-}"
+  [ -f "$MANIFEST" ] || die "setup-ai not installed here"
+  local broken=0 ok=0
+  while IFS= read -r rel; do
+    [ -z "$rel" ] && continue
+    local f="$TARGET/$rel"
+    if [ -L "$f" ] && [ ! -e "$f" ]; then
+      broken=$((broken+1)); rm -f "$f"
+      [ "$quiet" -eq 0 ] && c_yel "  pruned broken symlink: $rel"
+    else ok=$((ok+1)); fi
+  done < <(have_jq && jq -r '.installed[]' "$MANIFEST" || grep -oE '\.claude/[^"]+' "$MANIFEST")
+  if [ "$quiet" -eq 1 ]; then return 0; fi
+  local mv; mv="$(have_jq && jq -r .version "$MANIFEST" || echo '?')"
+  [ "$mv" = "$VERSION" ] || c_yel "  version drift: installed $mv, harness $VERSION (run: setup-ai update)"
+  if [ "$broken" -eq 0 ]; then c_grn "Healthy: $ok links OK."; else c_yel "Fixed $broken broken link(s); $ok OK."; fi
+}
+
+# ── dispatch ──
+cmd="${1:-}"; shift || true
+case "$cmd" in
+  install)   cmd_install "$@" ;;
+  update)    cmd_update "$@" ;;
+  list)      cmd_list "$@" ;;
+  uninstall) cmd_uninstall "$@" ;;
+  doctor)    cmd_doctor "$@" ;;
+  version|--version|-v) echo "setup-ai $VERSION ($SETUP_AI_HOME)" ;;
+  ""|help|-h|--help) usage ;;
+  *) die "unknown command: $cmd (try: setup-ai help)" ;;
+esac

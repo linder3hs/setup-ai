@@ -1,0 +1,26 @@
+{
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "Write|Edit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "f=$(jq -r '.tool_input.file_path // empty'); case \"$f\" in *.ts|*.tsx|*.js|*.jsx|*.json|*.css|*.md) [ -f node_modules/.bin/prettier ] && node_modules/.bin/prettier --write \"$f\" >/dev/null 2>&1 ;; esac; exit 0"
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "cmd=$(jq -r '.tool_input.command // empty'); if printf '%s' \"$cmd\" | grep -Eq 'rm[[:space:]]+-[a-zA-Z]*f[a-zA-Z]*[[:space:]]+(/|~|\\*|\\.[[:space:]])|git[[:space:]]+push[[:space:]].*--force([^-]|$)|DROP[[:space:]]+TABLE|DROP[[:space:]]+DATABASE|git[[:space:]]+reset[[:space:]]+--hard|:\\(\\)\\{'; then echo '{\"decision\":\"block\",\"reason\":\"setup-ai guard: destructive command detected (rm -rf / force-push / DROP / reset --hard). Re-run manually if you really mean it.\"}'; fi; exit 0"
+          }
+        ]
+      }
+    ]
+  }
+}

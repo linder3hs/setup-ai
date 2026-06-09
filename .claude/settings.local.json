@@ -1,0 +1,9 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(git -C /Users/linder3hs/dev/setup-ai status)",
+      "WebSearch",
+      "Read(//Users/linder3hs/.claude/**)"
+    ]
+  }
+}

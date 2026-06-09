@@ -1,0 +1,6 @@
+{
+  "name": "setup-ai",
+  "description": "Reusable AI coding harness: planner, code-reviewer, security-reviewer, test-engineer and scaffolder agents, with matching skills and slash commands.",
+  "version": "0.1.0",
+  "author": { "name": "Linder Hassinger" }
+}
