@@ -70,12 +70,14 @@ bin/setup-ai            install.sh
 
 ## Bonus: install as a plugin instead
 
-The repo is also a valid Claude Code plugin marketplace. From any project:
+The repo is also a published Claude Code plugin marketplace. From any project, in Claude Code:
 
 ```
-/plugin marketplace add ~/dev/setup-ai
+/plugin marketplace add linder3hs/setup-ai
 /plugin install setup-ai@setup-ai
 ```
+
+(Or point at a local checkout instead of GitHub: `/plugin marketplace add ~/dev/setup-ai`.)
 
 This namespaces the commands (`/setup-ai:plan`) and skips the symlink installer — useful for
 sharing with a team. The `setup-ai` CLI remains the simpler path for solo, always-latest use.
